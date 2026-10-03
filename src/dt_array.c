@@ -27,25 +27,71 @@ struct dt_array {
 };
 
 /*
+ * Helper to translate a logical index to a physical memory offset.
+ * Used by both dt_array_get and dt_array_set to ensure consistency.
+ */
+static dt_status array_index_to_offset(const dt_array *a, long long index, size_t *out_offset)
+{
+    /* Reject an index below the lower bound to prevent negative offsets. */
+    if (index < a->lower_bound) {
+        return DT_ERR_RANGE;
+    }
+    
+    /*  Compute non-negative distance safely using unsigned arithmetic. */
+    unsigned long long distance = (unsigned long long)index - (unsigned long long)a->lower_bound;
+    
+    /*  Reject if the distance is at or beyond the array length. */
+    if (distance >= (unsigned long long)a->length) {
+        return DT_ERR_RANGE;
+    }
+    
+    *out_offset = (size_t)distance;
+    return DT_OK;
+}
+
+/*
  * dt_array_new builds an array of length nil elements.
  * The first index is lower_bound. A zero length creates a valid empty array.
  * It returns NULL for an invalid size, invalid index range, or allocation failure.
  */
 dt_array *dt_array_new(size_t length, long long lower_bound)
 {
-    /* TODO: Allocate the descriptor and length elements.
-       Set each element to dt_value_nil(). Store the lower bound.
-       Return a valid array for a zero length.
-       Reject a nonempty range with an unrepresentable final index.
-       Reject an element block size that exceeds SIZE_MAX.
-       dt_array_new(3, 0)   -> three nil elements, indices 0, 1, 2
-       dt_array_new(3, -1)  -> three nil elements, indices -1, 0, 1
-       dt_array_new(0, 0)   -> an empty array
-       cases/normal/array_basics.case, cases/boundary/array_empty.case,
-       cases/boundary/array_negative_lower_bound.case */
-    (void)length;
-    (void)lower_bound;
-    return NULL;
+    if (length > 0) {
+        /* Reject an element block size that exceeds SIZE_MAX */
+        if (length > SIZE_MAX / sizeof(dt_value)) {
+            return NULL;
+        }
+        
+        /* Reject a nonempty range with an unrepresentable final index. 
+           Max safe distance from lower_bound is (LLONG_MAX - lower_bound). */
+        unsigned long long max_dist = (unsigned long long)LLONG_MAX - (unsigned long long)lower_bound;
+        if ((unsigned long long)(length - 1) > max_dist) {
+            return NULL;
+        }
+    }
+
+    dt_array *a = malloc(sizeof(dt_array));
+    if (!a) {
+        return NULL;
+    }
+
+    a->length = length;
+    a->lower_bound = lower_bound;
+
+    if (length == 0) {
+        a->elements = NULL;
+    } else {
+        a->elements = malloc(length * sizeof(dt_value));
+        if (!a->elements) {
+            free(a);
+            return NULL;
+        }
+        for (size_t i = 0; i < length; i++) {
+            a->elements[i] = dt_value_nil();
+        }
+    }
+
+    return a;
 }
 
 /*
@@ -54,11 +100,11 @@ dt_array *dt_array_new(size_t length, long long lower_bound)
  */
 void dt_array_free(dt_array *a)
 {
-    /* TODO: Release the elements. Then release the descriptor.
-       Preserve the referenced values. The driver environment owns them.
-       an array holding a string  -> the element block goes, the string stays
-       dt_array_free(NULL)        -> returns, having done nothing */
-    (void)a;
+    if (!a) return;
+    
+    /* only free the array's own storage. The environment owns the values inside. */
+    free(a->elements);
+    free(a);
 }
 
 /*
@@ -66,29 +112,15 @@ void dt_array_free(dt_array *a)
  */
 size_t dt_array_len(const dt_array *a)
 {
-    /* TODO: Return the stored length. The lower bound does not affect it.
-       after `arr new a 3 0`:   dt_array_len(a) -> 3
-       after `arr new a 3 -1`:  dt_array_len(a) -> 3, the same three elements
-       after `arr new a 0 0`:   dt_array_len(a) -> 0
-       cases/normal/array_basics.case, cases/boundary/array_empty.case */
-    (void)a;
-    return 0;
+    return a->length;
 }
 
 /*
- * dt_array_lower_bound returns the first array index. With lower bound 1,
- * index 1 uses storage offset 0.
+ * dt_array_lower_bound returns the first array index.
  */
 long long dt_array_lower_bound(const dt_array *a)
 {
-    /* TODO: Return the lower bound that the constructor stored.
-       dt_array_get uses this value to calculate an element offset.
-       after `arr new a 3 -1`:  dt_array_lower_bound(a) -> -1
-       after `arr new a 3 1`:   dt_array_lower_bound(a) -> 1
-       cases/boundary/array_negative_lower_bound.case,
-       cases/boundary/array_lower_bound_one.case */
-    (void)a;
-    return 0;
+    return a->lower_bound;
 }
 
 /*
@@ -97,22 +129,14 @@ long long dt_array_lower_bound(const dt_array *a)
  */
 dt_status dt_array_get(const dt_array *a, long long index, dt_value *out)
 {
-    /* TODO: Reject an index below the lower bound.
-       Calculate the nonnegative distance without signed overflow.
-       Reject a distance that is at least the length.
-       Convert the checked distance to size_t for the element offset.
-       an array over -1..1:
-         dt_array_get(a, -1, &out)  -> DT_OK, offset 0
-         dt_array_get(a,  1, &out)  -> DT_OK, offset 2
-         dt_array_get(a,  2, &out)  -> DT_ERR_RANGE, *out untouched
-         dt_array_get(a, -2, &out)  -> DT_ERR_RANGE, below the lower bound
-       cases/boundary/array_index_above_upper.case,
-       cases/boundary/array_index_below_lower.case,
-       cases/boundary/array_full_range_index.case */
-    (void)a;
-    (void)index;
-    (void)out;
-    return DT_ERR_RANGE;
+    size_t offset;
+    dt_status status = array_index_to_offset(a, index, &offset);
+    if (status != DT_OK) {
+        return status;
+    }
+    
+    *out = a->elements[offset];
+    return DT_OK;
 }
 
 /*
@@ -122,14 +146,12 @@ dt_status dt_array_get(const dt_array *a, long long index, dt_value *out)
  */
 dt_status dt_array_set(dt_array *a, long long index, dt_value v)
 {
-    /* TODO: Use the same bounds check as dt_array_get. Then write the value.
-       Put the shared check in one helper.
-       an array over -1..1:
-         dt_array_set(a, -1, dt_value_int(10))  -> DT_OK, offset 0 holds 10
-         dt_array_set(a,  2, dt_value_int(10))  -> DT_ERR_RANGE, nothing changes
-       cases/normal/array_basics.case, cases/boundary/array_negative_lower_bound.case */
-    (void)a;
-    (void)index;
-    (void)v;
-    return DT_ERR_RANGE;
+    size_t offset;
+    dt_status status = array_index_to_offset(a, index, &offset);
+    if (status != DT_OK) {
+        return status;
+    }
+    
+    a->elements[offset] = v;
+    return DT_OK;
 }
