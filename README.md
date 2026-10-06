@@ -10,7 +10,7 @@ toolchains, and local verification details for the work that the manual defines.
 Replace the two entries below. An assigned trio adds one entry.
 
 - Leona Mae Q. Blancaflor (`@leoleom`)
-- Full Name (`@github-username`)
+- Lunele Iven S. Moscoso (`@LuneleIven`)
 
 ## Files You May Change
 
