@@ -32,6 +32,12 @@ struct dt_array {
  */
 static dt_status array_index_to_offset(const dt_array *a, long long index, size_t *out_offset)
 {
+    /*
+     Safely translates an arbitrary signed index into a 0-based memory offset.
+     By checking the lower bound first, we guarantee 
+     the distance is non-negative and can safely use unsigned math to find the offset.
+     */
+
     /* Reject an index below the lower bound to prevent negative offsets. */
     if (index < a->lower_bound) {
         return DT_ERR_RANGE;
@@ -56,6 +62,16 @@ static dt_status array_index_to_offset(const dt_array *a, long long index, size_
  */
 dt_array *dt_array_new(size_t length, long long lower_bound)
 {
+    /*
+     Validates the capacity and index boundaries, allocates the descriptor and 
+     elements buffer, and initializes all slots to nil.
+     
+     We must intercept extreme lengths to prevent `length * sizeof(dt_value)` from 
+     silently wrapping around SIZE_MAX during allocation. We also enforce that the final 
+     upper index won't exceed LLONG_MAX. A length of 0 explicitly sets `elements` to NULL 
+     because calling `malloc(0)` has implementation-defined behavior in C.
+     */
+
     if (length > 0) {
         /* Reject an element block size that exceeds SIZE_MAX */
         if (length > SIZE_MAX / sizeof(dt_value)) {
@@ -100,6 +116,13 @@ dt_array *dt_array_new(size_t length, long long lower_bound)
  */
 void dt_array_free(dt_array *a)
 {
+    /*
+     Frees the dynamic element buffer and the array descriptor itself.
+     The array borrows its `dt_value` elements. The environment owns the actual 
+     objects (like strings or lists) inside those values, so freeing them here would 
+     cause a double-free crash when the driver cleans up.
+     */
+
     if (!a) return;
     
     /* only free the array's own storage. The environment owns the values inside. */
@@ -112,6 +135,10 @@ void dt_array_free(dt_array *a)
  */
 size_t dt_array_len(const dt_array *a)
 {
+    /*
+     Directly returns the stored length.
+     An O(1) constant-time lookup is required for array descriptors.
+     */
     return a->length;
 }
 
@@ -120,6 +147,10 @@ size_t dt_array_len(const dt_array *a)
  */
 long long dt_array_lower_bound(const dt_array *a)
 {
+    /*
+     Directly returns the starting logical index.
+     This metadata must be exposed so callers know where the valid index range begins.
+     */
     return a->lower_bound;
 }
 
@@ -129,6 +160,12 @@ long long dt_array_lower_bound(const dt_array *a)
  */
 dt_status dt_array_get(const dt_array *a, long long index, dt_value *out)
 {
+    /*
+     
+     Uses the helper to calculate the physical offset, then retrieves the value.
+     Safely encapsulates the bounds check so out-of-bounds reads return a controlled 
+     error status rather than causing a segmentation fault.
+     */
     size_t offset;
     dt_status status = array_index_to_offset(a, index, &offset);
     if (status != DT_OK) {
@@ -146,6 +183,11 @@ dt_status dt_array_get(const dt_array *a, long long index, dt_value *out)
  */
 dt_status dt_array_set(dt_array *a, long long index, dt_value v)
 {
+    /*
+     Uses the helper to calculate the physical offset, then writes the value.
+     Symmetrical to `dt_array_get`. Reusing the helper ensures we do not overwrite 
+    memory outside the allocated buffer.
+     */
     size_t offset;
     dt_status status = array_index_to_offset(a, index, &offset);
     if (status != DT_OK) {
